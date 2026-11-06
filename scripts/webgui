@@ -1,0 +1,242 @@
+#!/bin/bash
+# webgui - Firefox remoto su display X virtuale, accessibile via noVNC.
+# Uso: webgui start|stop|restart|status|url|open <url>|fit|zoom <f>|res <WxH>|reset|logs
+set -u
+
+export HOME=/root
+# Firefox rispetta Default=1 in profiles.ini invece di creare un profilo
+# nuovo per installazione.
+export MOZ_LEGACY_PROFILES=1
+export MOZ_ENABLE_WAYLAND=0
+
+D=:99
+DN=99
+VP=5900
+WP=6080
+PNAME=remote
+P=/root/.mozilla/firefox/$PNAME
+INI=/root/.mozilla/firefox/profiles.ini
+CONF=/etc/webgui.conf
+DBUSENV=/run/webgui-dbus.env
+LOG=/var/log/webgui.log
+
+# Risoluzione e zoom sono in /etc/webgui.conf, modificabili con 'res' e 'zoom'
+GEOM=1440x900
+DPPX=1.0
+[ -r "$CONF" ] && . "$CONF"
+
+export DISPLAY=$D
+FF=$(command -v firefox-esr || command -v firefox || true)
+
+die() { echo "errore: $*" >&2; exit 1; }
+[ -n "$FF" ] || die "firefox non trovato nel PATH"
+
+save_conf() {
+  printf 'GEOM=%s\nDPPX=%s\n' "$GEOM" "$DPPX" > "$CONF"
+}
+
+# --- DBus di sessione persistente ------------------------------------------
+# Serve al remoting: 'firefox --new-tab' deve parlare con l'istanza gia attiva,
+# altrimenti un secondo processo tenta di aprire lo stesso profilo e Firefox
+# segnala il profilo come mancante o in uso.
+dbus_up() {
+  [ -s "$DBUSENV" ] && . "$DBUSENV"
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || \
+     ! dbus-send --session --dest=org.freedesktop.DBus --type=method_call \
+         /org/freedesktop/DBus org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1; then
+    unset DBUS_SESSION_BUS_ADDRESS
+    eval "$(dbus-launch --sh-syntax)"
+    printf "export DBUS_SESSION_BUS_ADDRESS='%s'\nexport DBUS_SESSION_BUS_PID='%s'\n" \
+      "$DBUS_SESSION_BUS_ADDRESS" "${DBUS_SESSION_BUS_PID:-}" > "$DBUSENV"
+    chmod 600 "$DBUSENV"
+  fi
+  export DBUS_SESSION_BUS_ADDRESS
+}
+
+# --- Profilo Firefox --------------------------------------------------------
+write_userjs() {
+  cat > "$P/user.js" <<PREFS
+// Generato da webgui: non modificare a mano, usa 'webgui zoom'
+user_pref("layout.css.devPixelsPerPx", "$DPPX");
+// Nessuna GPU nel container: rendering software
+user_pref("gfx.webrender.all", false);
+user_pref("layers.acceleration.disabled", true);
+// Meno processi figli: risparmio RAM
+user_pref("dom.ipc.processCount", 2);
+// Niente telemetria ne studi
+user_pref("toolkit.telemetry.enabled", false);
+user_pref("toolkit.telemetry.unified", false);
+user_pref("datareporting.healthreport.uploadEnabled", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("app.shield.optoutstudies.enabled", false);
+// Niente pagine di prima esecuzione ne ripristino sessione
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("datareporting.policy.firstRunURL", "");
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+// Su VNC conviene ridurre animazioni e smooth scroll
+user_pref("general.smoothScroll", false);
+user_pref("ui.prefersReducedMotion", 1);
+user_pref("browser.cache.disk.capacity", 102400);
+PREFS
+}
+
+profile_up() {
+  mkdir -p /root/.mozilla/firefox "$P"
+  if ! grep -qs "^Name=$PNAME\$" "$INI"; then
+    "$FF" --no-remote -CreateProfile "$PNAME $P" >/dev/null 2>&1
+  fi
+  write_userjs
+  # I lock restano se Firefox e' stato terminato con SIGKILL
+  rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
+}
+
+ff_running() { pgrep -f "firefox.*-P $PNAME" >/dev/null; }
+
+# --- Adatta la finestra al display ------------------------------------------
+fit() {
+  local w h
+  w=${GEOM%x*}; h=${GEOM#*x}
+  command -v xdotool >/dev/null || { echo "xdotool non installato"; return 1; }
+  local id
+  id=$(xdotool search --onlyvisible --class 'Navigator' 2>/dev/null | head -1)
+  [ -z "$id" ] && id=$(xdotool search --onlyvisible --class 'firefox' 2>/dev/null | head -1)
+  [ -z "$id" ] && { echo "finestra Firefox non trovata"; return 1; }
+  xdotool windowmove "$id" 0 0 windowsize "$id" "$w" "$h" 2>/dev/null
+  xdotool windowactivate "$id" 2>/dev/null
+  echo "finestra adattata a ${w}x${h}"
+}
+
+up() {
+  if ! pgrep -f "Xvfb $D" >/dev/null; then
+    rm -f /tmp/.X${DN}-lock /tmp/.X11-unix/X${DN} 2>/dev/null
+    Xvfb $D -screen 0 "${GEOM}x24" -dpi 96 +extension RANDR -nolisten tcp >>"$LOG" 2>&1 &
+    sleep 1
+  fi
+  pgrep -x openbox >/dev/null || { openbox >>"$LOG" 2>&1 & sleep 1; }
+  command -v autocutsel >/dev/null && {
+    pgrep -f 'autocutsel -fork' >/dev/null || autocutsel -fork >>"$LOG" 2>&1
+    pgrep -f 'autocutsel -selection PRIMARY' >/dev/null || autocutsel -selection PRIMARY -fork >>"$LOG" 2>&1
+  }
+  dbus_up
+  profile_up
+  if ! ff_running; then
+    "$FF" -P "$PNAME" about:blank >>"$LOG" 2>&1 &
+    sleep 5
+    fit >/dev/null 2>&1
+  fi
+  pgrep -x x11vnc >/dev/null || x11vnc -display $D -rfbport $VP -localhost \
+    -rfbauth /root/.vnc/passwd -forever -shared -bg -quiet >>"$LOG" 2>&1
+  pgrep -f "websockify.*$WP" >/dev/null || \
+    websockify --web=/usr/share/novnc -D $WP localhost:$VP >>"$LOG" 2>&1
+  url
+}
+
+down() {
+  pkill -f "websockify.*$WP" 2>/dev/null
+  pkill -x x11vnc 2>/dev/null
+  pkill -f "firefox" 2>/dev/null
+  pkill -f autocutsel 2>/dev/null
+  pkill -x openbox 2>/dev/null
+  pkill -f "Xvfb $D" 2>/dev/null
+  sleep 1
+  rm -f /tmp/.X${DN}-lock /tmp/.X11-unix/X${DN} "$P/.parentlock" "$P/lock" 2>/dev/null
+  echo "fermato"
+}
+
+url() {
+  local s
+  s=$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // empty' 2>/dev/null)
+  if [ -n "$s" ]; then
+    echo "https://$(hostname).${s}/vnc.html?resize=scale"
+  else
+    echo "http://$(hostname -I | awk '{print $1}'):${WP}/vnc.html?resize=scale"
+  fi
+}
+
+st() {
+  for p in "Xvfb $D" openbox "firefox.*-P $PNAME" x11vnc "websockify.*$WP"; do
+    if pgrep -f "$p" >/dev/null; then echo "ok    $p"; else echo "GIU   $p"; fi
+  done
+  ss -tlnH "( sport = :$VP or sport = :$WP )" 2>/dev/null | awk '{print "port  "$4}'
+  echo "geom  $GEOM  zoom $DPPX"
+  [ -s "$DBUSENV" ] && echo "dbus  presente"
+  if grep -qs "^Name=$PNAME\$" "$INI"; then echo "prof  $PNAME registrato"; else echo "PROF  $PNAME MANCANTE"; fi
+  if tailscale serve status 2>/dev/null | grep -q "$WP"; then
+    echo "serve attivo su 6080"
+  else
+    echo "SERVE NON ATTIVO -> tailscale serve --bg $WP"
+  fi
+}
+
+open_url() {
+  local u="${1:?serve un URL}"
+  up >/dev/null
+  if ff_running; then
+    # Remoting: nuova scheda nell'istanza esistente, nessun secondo processo
+    if "$FF" -P "$PNAME" --new-tab "$u" >>"$LOG" 2>&1; then
+      echo "aperto (nuova scheda): $u"
+      return 0
+    fi
+    echo "remoting fallito, riavvio Firefox sull'URL" >&2
+    pkill -f firefox 2>/dev/null
+    sleep 2
+    rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
+  fi
+  "$FF" -P "$PNAME" "$u" >>"$LOG" 2>&1 &
+  sleep 5
+  fit >/dev/null 2>&1
+  echo "aperto (nuova istanza): $u"
+}
+
+set_zoom() {
+  local z="${1:?esempio: webgui zoom 1.25}"
+  case "$z" in
+    ''|*[!0-9.]*) die "zoom non valido: $z" ;;
+  esac
+  DPPX="$z"
+  save_conf
+  profile_up
+  echo "zoom impostato a $DPPX, riavvio Firefox"
+  pkill -f firefox 2>/dev/null
+  sleep 2
+  rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
+  "$FF" -P "$PNAME" about:blank >>"$LOG" 2>&1 &
+  sleep 5
+  fit
+}
+
+set_res() {
+  local g="${1:?esempio: webgui res 1920x1080}"
+  case "$g" in
+    [0-9]*x[0-9]*) : ;;
+    *) die "formato non valido: usa LARGHEZZAxALTEZZA" ;;
+  esac
+  GEOM="$g"
+  save_conf
+  echo "risoluzione impostata a $GEOM, riavvio lo stack"
+  down >/dev/null
+  up
+}
+
+reset_all() {
+  down
+  rm -rf "$P" "$INI" "$DBUSENV"
+  pkill -x dbus-daemon 2>/dev/null
+  echo "profilo e dbus azzerati"
+}
+
+case "${1:-}" in
+  start)   up ;;
+  stop)    down ;;
+  restart) down; up ;;
+  status)  st ;;
+  url)     url ;;
+  open)    open_url "${2:-}" ;;
+  fit)     fit ;;
+  zoom)    set_zoom "${2:-}" ;;
+  res)     set_res "${2:-}" ;;
+  reset)   reset_all ;;
+  logs)    tail -n 60 "$LOG" 2>/dev/null || echo "nessun log" ;;
+  *)       echo "uso: webgui start|stop|restart|status|url|open <url>|fit|zoom <f>|res <WxH>|reset|logs" ;;
+esac
