@@ -68,6 +68,12 @@ host, not a personal token with `repo` scope over everything.
   interface; nothing else does.
 - Set a real VNC password (`x11vnc -storepasswd`, file mode `600`). noVNC itself has no
   authentication: whoever reaches the gateway reaches the password prompt.
+- Some containerized browser images run their VNC server with `-SecurityTypes None`,
+  which means no password at all. That is a deliberate trade: the tailnet becomes the
+  only gate, so the ACL must be tight and the port must stay on loopback. Never publish
+  such a console through Funnel or through a LAN bind.
+- One browser, one profile volume. Two browsers in front of the same tailnet doubles the
+  credential surface for no benefit.
 - The session DBus address file lets a local user inject commands into the running
   Firefox. Keep it at `0600`.
 - The Firefox profile stores cookies in the clear on disk. Full-disk encryption or an

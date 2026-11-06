@@ -26,10 +26,18 @@ that look like firewall problems and are not.
 |---|---|---|
 | Several web UIs on one host | `tailscale serve` per port | [docs/02](docs/02-tailscale-access.md) |
 | A name that survives replacing the host | Tailscale Services | [docs/02](docs/02-tailscale-access.md#tailscale-services) |
-| Full desktop, or a browser shared with an agent | noVNC on loopback, then Serve | [docs/03](docs/03-browser-access.md) |
+| A browser you and an agent share | one containerized browser, noVNC on loopback, then Serve | [docs/03](docs/03-browser-access.md) |
+| A desktop on a host without Docker | Xvfb plus Firefox plus x11vnc, legacy | [docs/03](docs/03-browser-access.md#pattern-b-a-headless-firefox-desktop-on-the-host) |
 | CLI OAuth login with a loopback callback | browser inside the box, or `ssh -L` | [docs/04](docs/04-cli-login.md) |
 | Something does not answer | failure taxonomy | [docs/05](docs/05-troubleshooting.md) |
 | Before exposing anything | exposure rules | [docs/06](docs/06-security.md) |
+
+**One browser, two drivers.** The default is a single containerized browser that you
+watch over noVNC and the agent drives over CDP or MCP, with one profile volume holding
+the logins. Two browsers in front of the same tailnet means two sets of credentials,
+two things to patch, and two answers to "which one is logged in". The Xvfb plus
+Firefox pattern stays documented because it needs a third of the memory and no Docker,
+not because it is a good default.
 
 ## Quick start
 

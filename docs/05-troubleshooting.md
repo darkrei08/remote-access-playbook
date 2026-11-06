@@ -146,6 +146,37 @@ ss -tlnp 'sport = :5900'
 x11vnc -display :99 -rfbport 5900 -localhost -rfbauth /root/.vnc/passwd -forever -shared -bg -quiet
 ```
 
+## noVNC says "password check failed"
+
+The connection reached a VNC server that rejected the password, so the gateway and the
+tunnel are fine and the problem is the credential.
+
+Two causes, in order of likelihood:
+
+1. **You are on the wrong server.** A containerized browser usually runs its own VNC
+   server with `-SecurityTypes None` (no password at all), while the host stack runs
+   `x11vnc -rfbauth /root/.vnc/passwd`. If `tailscale serve status` points at the host
+   port and you typed the container's expectations, or the reverse, auth fails. Check
+   what the proxy targets and what the target actually requires:
+
+   ```bash
+   tailscale serve status
+   docker exec <browser-container> ps aux | grep -i vnc
+   ss -tlnp 'sport = :5900'
+   ```
+
+2. **The password file is stale or corrupt.** It was created once, long ago, possibly
+   with a truncated paste. Regenerate it; the old password is unrecoverable by design:
+
+   ```bash
+   x11vnc -storepasswd /root/.vnc/passwd
+   chmod 600 /root/.vnc/passwd
+   webgui restart
+   ```
+
+A VNC password is truncated to 8 characters by the protocol. If the one you typed is
+longer, only the first 8 count, which is a common source of "the password is right and
+it still fails".
 ## Text renders as boxes
 
 No fonts.

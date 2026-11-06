@@ -5,9 +5,10 @@ Two working patterns. Pick by who needs the pixels.
 - **Pattern A, browser in a container.** A full desktop with a browser inside a
   container, noVNC published on loopback. You can watch and drive it, and an agent
   drives the same window over CDP or MCP. Login state persists in a volume.
-- **Pattern B, browser on the host.** Xvfb plus Firefox plus x11vnc plus noVNC, driven
-  by `scripts/webgui`. Roughly a third of the memory, no Docker, but the agent has no
-  clean programmatic handle on it.
+- **Pattern B, browser on the host, legacy.** Xvfb plus Firefox plus x11vnc plus
+  noVNC, driven by `scripts/webgui`. Roughly a third of the memory, no Docker, but the
+  agent has no clean programmatic handle on it. Use it when the host has no Docker or
+  memory is the binding constraint, not as a default.
 
 Both end the same way: something listens on `127.0.0.1`, and Tailscale Serve publishes
 it. See [docs/01](01-network-model.md) if that sentence does not yet make sense.
@@ -62,6 +63,10 @@ headers, and it proves the service is up.
 - The profile directory is a credential. Back it up encrypted, never commit it.
 
 ## Pattern B: a headless Firefox desktop on the host
+
+Legacy. Keep this only for a host without Docker, or when memory is the binding
+constraint. A single containerized browser (Pattern A) is easier to secure, because
+there is one profile to protect and one process tree to reason about.
 
 Stack: Xvfb (virtual display) + Openbox (window manager) + a session DBus + Firefox ESR
 + x11vnc (VNC server on loopback) + websockify/noVNC (browser client).
@@ -224,7 +229,7 @@ ssh -L 9222:127.0.0.1:9222 root@<host>
 | Shared authenticated session | yes | no |
 | Isolation from your real profile | yes | no, it is the box |
 | Setup | compose plus one serve command | packages plus one script |
-| Right for | agent work with real logins | OAuth logins, quick checks, low resources |
+| Role | default | legacy, Docker-free fallback |
 
 They compose: run Pattern A for the agent, Pattern B for the occasional login that
 needs a real window, and only one of them gets port 443.
