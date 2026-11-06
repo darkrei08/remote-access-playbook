@@ -14,21 +14,32 @@ tailscale status | head -3                # is the node even up
 `Connection refused` is nothing listening. `Timeout` is a drop. `502` from Serve is a
 dead target behind a live proxy. A wrong path is `404`.
 
-## Status says ok and the page does not load
+## A process check says ok and the page does not load
 
-The most expensive failure of the whole setup. A health check on a process name matches
-a process from another container:
+The most expensive failure of the whole setup. It has three faces, and all three come
+from the same mistake: treating a visible process as a live listener.
+
+**Status lied.** The health check matched a `websockify` that runs inside a
+containerized browser, on another network namespace:
 
 ```text
 $ webgui status
-ok    websockify.*6080
+ok    websockify 6080          # the container's process
 $ ss -tln 'sport = :6080'
 State Recv-Q Send-Q Local Address:Port
 ```
 
-Nothing is listening, and `pgrep` found the websockify that belongs to a containerized
-browser on a different network namespace. The host's own gateway was simply never
-started.
+Nothing was listening, and every line said `ok`. The desktop, x11vnc and Firefox were
+up; the web gateway had never started.
+
+**Start skipped.** The guard before launching the gateway used the same raw
+`pgrep -f "websockify.*6080"`, matched the container's process, concluded the gateway
+was already running, and started nothing. `webgui start` printed a URL and changed
+nothing.
+
+**Stop killed a neighbour.** The host sees container processes with host PIDs, so
+`pkill -f websockify` from the host also matches the container's own gateway. A
+`webgui stop` could take down an unrelated service in a container.
 
 Confirm the namespace before trusting any process check:
 
@@ -37,18 +48,27 @@ readlink /proc/<pid>/ns/net
 readlink /proc/self/ns/net
 ```
 
-Different inode, different namespace, not your listener. Fix the check, then the
-service:
+A different inode is a different network namespace, so its sockets are not yours. The
+authoritative check is the socket:
 
 ```bash
-# replace a pgrep check with a socket check
-ss -tln 'sport = :6080' | grep -q ':6080' && echo ok || echo GIU
+ss -tln 'sport = :6080'
 ```
 
-```bash
-webgui restart
-ss -tlnp 'sport = :6080'
+The script now filters by network namespace (`own()`), so `status` prints
+`GATE NESSUN LISTENER` when the socket is missing, `start` launches the gateway instead
+of being fooled by a neighbour, and `stop` signals only its own PIDs.
+
+After the fix, the same host reports:
+
+```text
+ok    websockify 6080
+port  127.0.0.1:6080
+gate  in ascolto su 6080
 ```
+
+And `curl` from another tailnet device returns `200` instead of the `502` that started
+the investigation.
 
 ## 502 Bad Gateway from Tailscale
 

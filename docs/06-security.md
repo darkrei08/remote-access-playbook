@@ -24,9 +24,13 @@ publishes `"3389:3389"` and a router with UPnP is all it takes.
    terminates TLS with the tailnet certificate, and the ACL still applies.
 3. **One UI per port.** Path prefixes on a single port put unrelated apps behind the
    same origin, and their cookies and service workers then share a scope.
-4. **Funnel is a publishing decision.** It needs an ACL `nodeAttrs` permission and it
+4. **Give web gateways an explicit loopback address.** `websockify 6080 localhost:5900`
+   binds `0.0.0.0`: the console lands on the LAN, outside the Tailscale path. Write
+   `websockify -D 127.0.0.1:6080 localhost:5900`. The same applies to every server that
+   takes a port but no host.
+5. **Funnel is a publishing decision.** It needs an ACL `nodeAttrs` permission and it
    makes the service public. Never enable it to "see if it works".
-5. **Tagged nodes are not you.** A device joined with `--advertise-tags` loses
+6. **Tagged nodes are not you.** A device joined with `--advertise-tags` loses
    user-derived identity in ACLs. Decide the tag before you join, not after.
 
 ## What each kind of service actually grants

@@ -91,7 +91,20 @@ profile_up() {
   rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
 }
 
-ff_running() { pgrep -f "firefox.*-P $PNAME" >/dev/null; }
+own() { # pid che corrispondono al pattern e vivono nel nostro network namespace
+  local ns pid
+  ns=$(readlink /proc/self/ns/net)
+  for pid in $(pgrep -f "$1" 2>/dev/null); do
+    [ "$(readlink "/proc/$pid/ns/net" 2>/dev/null)" = "$ns" ] && echo "$pid"
+  done
+}
+
+ff_running() { [ -n "$(own "^$FF -P $PNAME")" ]; }
+
+kill_own() { # termina solo i processi del pattern dentro il nostro netns
+  local pid
+  for pid in $(own "$1"); do kill "$pid" 2>/dev/null; done
+}
 
 # --- Adatta la finestra al display ------------------------------------------
 fit() {
@@ -108,15 +121,15 @@ fit() {
 }
 
 up() {
-  if ! pgrep -f "Xvfb $D" >/dev/null; then
+  if [ -z "$(own "^Xvfb $D")" ]; then
     rm -f /tmp/.X${DN}-lock /tmp/.X11-unix/X${DN} 2>/dev/null
     Xvfb $D -screen 0 "${GEOM}x24" -dpi 96 +extension RANDR -nolisten tcp >>"$LOG" 2>&1 &
     sleep 1
   fi
-  pgrep -x openbox >/dev/null || { openbox >>"$LOG" 2>&1 & sleep 1; }
+  [ -n "$(own "^openbox")" ] || { openbox >>"$LOG" 2>&1 & sleep 1; }
   command -v autocutsel >/dev/null && {
-    pgrep -f 'autocutsel -fork' >/dev/null || autocutsel -fork >>"$LOG" 2>&1
-    pgrep -f 'autocutsel -selection PRIMARY' >/dev/null || autocutsel -selection PRIMARY -fork >>"$LOG" 2>&1
+    [ -n "$(own "^autocutsel -fork")" ] || autocutsel -fork >>"$LOG" 2>&1
+    [ -n "$(own "^autocutsel -selection PRIMARY")" ] || autocutsel -selection PRIMARY -fork >>"$LOG" 2>&1
   }
   dbus_up
   profile_up
@@ -125,20 +138,23 @@ up() {
     sleep 5
     fit >/dev/null 2>&1
   fi
-  pgrep -x x11vnc >/dev/null || x11vnc -display $D -rfbport $VP -localhost \
+  [ -n "$(own "^x11vnc")" ] || x11vnc -display $D -rfbport $VP -localhost \
     -rfbauth /root/.vnc/passwd -forever -shared -bg -quiet >>"$LOG" 2>&1
-  pgrep -f "websockify.*$WP" >/dev/null || \
-    websockify --web=/usr/share/novnc -D $WP localhost:$VP >>"$LOG" 2>&1
+  # 127.0.0.1 esplicito: senza indirizzo websockify ascolta su 0.0.0.0 e il
+  # gateway finisce sulla LAN, fuori dal percorso Tailscale Serve.
+  [ -n "$(own "^/usr/bin/python3 .*websockify.*$WP")" ] || \
+    websockify --web=/usr/share/novnc -D 127.0.0.1:$WP localhost:$VP >>"$LOG" 2>&1
   url
 }
 
 down() {
-  pkill -f "websockify.*$WP" 2>/dev/null
-  pkill -x x11vnc 2>/dev/null
-  pkill -f "firefox" 2>/dev/null
-  pkill -f autocutsel 2>/dev/null
-  pkill -x openbox 2>/dev/null
-  pkill -f "Xvfb $D" 2>/dev/null
+  kill_own "^/usr/bin/python3 .*websockify.*$WP"
+  kill_own "^x11vnc"
+  kill_own "^$FF -P $PNAME"
+  kill_own "^$FF"
+  kill_own "^autocutsel"
+  kill_own "^openbox"
+  kill_own "^Xvfb $D"
   sleep 1
   rm -f /tmp/.X${DN}-lock /tmp/.X11-unix/X${DN} "$P/.parentlock" "$P/lock" 2>/dev/null
   echo "fermato"
@@ -155,15 +171,24 @@ url() {
 }
 
 st() {
-  for p in "Xvfb $D" openbox "firefox.*-P $PNAME" x11vnc "websockify.*$WP"; do
-    if pgrep -f "$p" >/dev/null; then echo "ok    $p"; else echo "GIU   $p"; fi
+  # Pattern ancorati a ^: senza ancoraggio pgrep -f trova anche la shell che ha
+  # lanciato il comando, e il check direbbe ok per se stesso.
+  for p in "Xvfb $D|^Xvfb $D" "openbox|^openbox" "firefox -P $PNAME|^$FF -P $PNAME" "x11vnc|^x11vnc" "websockify $WP|^/usr/bin/python3 .*websockify.*$WP"; do
+    if [ -n "$(own "${p#*|}")" ]; then echo "ok    ${p%%|*}"; else echo "GIU   ${p%%|*}"; fi
   done
   ss -tlnH "( sport = :$VP or sport = :$WP )" 2>/dev/null | awk '{print "port  "$4}'
+  # Un processo vivo non e' un listener: un websockify in un altro namespace
+  # (container) soddisfa pgrep ma non ascolta qui.
+  if [ -n "$(ss -tlnH "sport = :$WP" 2>/dev/null)" ]; then
+    echo "gate  in ascolto su $WP"
+  else
+    echo "GATE  NESSUN LISTENER su $WP -> websockify non avviato"
+  fi
   echo "geom  $GEOM  zoom $DPPX"
   [ -s "$DBUSENV" ] && echo "dbus  presente"
   if grep -qs "^Name=$PNAME\$" "$INI"; then echo "prof  $PNAME registrato"; else echo "PROF  $PNAME MANCANTE"; fi
   if tailscale serve status 2>/dev/null | grep -q "$WP"; then
-    echo "serve attivo su 6080"
+    echo "serve attivo su $WP"
   else
     echo "SERVE NON ATTIVO -> tailscale serve --bg $WP"
   fi
@@ -179,7 +204,7 @@ open_url() {
       return 0
     fi
     echo "remoting fallito, riavvio Firefox sull'URL" >&2
-    pkill -f firefox 2>/dev/null
+    kill_own "^$FF"
     sleep 2
     rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
   fi
@@ -198,7 +223,7 @@ set_zoom() {
   save_conf
   profile_up
   echo "zoom impostato a $DPPX, riavvio Firefox"
-  pkill -f firefox 2>/dev/null
+  kill_own "^$FF"
   sleep 2
   rm -f "$P/.parentlock" "$P/lock" 2>/dev/null
   "$FF" -P "$PNAME" about:blank >>"$LOG" 2>&1 &

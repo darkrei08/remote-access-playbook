@@ -113,15 +113,18 @@ prof  remote registrato
 serve attivo su 6080
 ```
 
-The `websockify` line is a `pgrep` match and can be a false positive when another
-container runs its own websockify. Confirm with `ss`:
+`status` reports `ok` only for a process that lives in this host's network namespace, and
+it prints a separate `gate` line for the gateway socket, because a live process is not
+proof of a listener:
 
-```bash
-ss -tln 'sport = :6080'
+```text
+ok    websockify 6080
+gate  in ascolto su 6080
 ```
 
-If that prints only the header, the gateway is down even though `status` says `ok`.
-That exact failure is documented in [docs/05](05-troubleshooting.md#status-says-ok-and-the-page-does-not-load).
+`GATE NESSUN LISTENER` means the web gateway is down even when every other line says
+`ok`. The three ways that check used to lie are documented in
+[docs/05](05-troubleshooting.md#a-process-check-says-ok-and-the-page-does-not-load).
 
 ### Commands
 
