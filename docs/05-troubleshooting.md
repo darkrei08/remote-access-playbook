@@ -177,6 +177,29 @@ Two causes, in order of likelihood:
 A VNC password is truncated to 8 characters by the protocol. If the one you typed is
 longer, only the first 8 count, which is a common source of "the password is right and
 it still fails".
+## noVNC reconnects forever and never shows the desktop
+
+Symptom: the page alternates between "connecting" and "disconnected" and never paints.
+It looks like a loop, not an error, and there is no message to read.
+
+The usual cause is in the URL. `resize=remote` asks the RFB server to change its own
+framebuffer, which needs RandR support on that server. When the negotiation is rejected
+or drops the connection, and the same URL also carries `reconnect=1`, noVNC retries
+forever instead of showing the failure.
+
+Use the mode that negotiates nothing:
+
+```text
+https://<host>.<tailnet>.ts.net/vnc.html?resize=scale
+```
+
+`resize=scale` scales the framebuffer in the client. Drop `reconnect=1` while
+diagnosing, so the first error is visible instead of being retried away.
+
+Some images ship an index page that redirects to the remote-resize URL, so opening the
+root of the site reproduces the loop while the explicit `?resize=scale` URL works.
+Bookmark the explicit one.
+
 ## Text renders as boxes
 
 No fonts.

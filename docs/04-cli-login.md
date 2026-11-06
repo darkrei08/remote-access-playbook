@@ -19,13 +19,30 @@ Diagnose which one you have by watching what the CLI does: if it prints a code t
 it is device flow; if it opens a localhost URL with a `redirect_uri` pointing at
 `127.0.0.1`, it is a loopback callback.
 
-## Option 1: a browser inside the box
+## Option 1: a browser you already run
 
-The most general fix, and the only one that works from a phone. Put a real browser on
-the same loopback as the CLI, then reach it over noVNC. See
-[docs/03](03-browser-access.md).
+The most general fix, and the only one that works from a phone. Use a browser that lives
+on a machine you can reach: a containerized one with noVNC (see
+[docs/03](03-browser-access.md)), or a desktop you already have.
 
-Then make CLIs use it:
+A container browser has one constraint that decides everything: its `127.0.0.1` is not
+the host's. A CLI that listens on `127.0.0.1:8085` for its callback will never receive
+the redirect from a browser inside a container, because the redirect goes to the
+container's own loopback.
+
+So use it for the flows that do not depend on your loopback:
+
+- Device flow, which is most modern CLIs: the code is typed into the page, so any
+  browser works. `gh auth login --web`, `gcloud auth login` and similar print the URL.
+- Token or deploy key, for anything unattended.
+
+And use the host loopback browser (this option) only when the CLI insists on a callback
+on `127.0.0.1`. If you have removed that browser, `ssh -L` is the answer, not a
+reinstall.
+
+### If the browser is on the host itself
+
+When a host browser exists, make CLIs find it:
 
 ```bash
 printf '#!/bin/sh\nexec /usr/local/bin/webgui open "$1"\n' > /usr/local/bin/open-url

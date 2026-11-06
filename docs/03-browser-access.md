@@ -197,6 +197,33 @@ ls -lt /root/Downloads 2>/dev/null
 scp root@<host>:/root/Downloads/file ./
 ```
 
+### Removing the host stack when you standardize on one browser
+
+Two browsers in front of one tailnet means two credential sets, two things to patch, and
+an ambiguous answer to "which one is logged in". When the container browser covers your
+needs, remove the host stack instead of leaving it stopped:
+
+```bash
+systemctl disable --now webgui.service
+rm -f /etc/systemd/system/webgui.service
+apt purge -y firefox-esr novnc websockify x11vnc openbox xvfb autocutsel xdotool wmctrl
+apt autoremove --purge -y     # read the dry run first: it may remove fonts and libraries
+```
+
+That frees about 300 MB and removes the largest stale credential surface on the host.
+
+What you lose, and its replacement:
+
+| Lost | Replacement |
+|---|---|
+| The host desktop | The container browser, same noVNC, same tailnet URL |
+| `webgui open <url>` for CLI logins | Device flow, pasted into the container browser |
+| `$BROWSER` on the host | Tokens for unattended tools, `ssh -L` for loopback callbacks |
+
+Keep `/root/.vnc` and the browser profile directories until you have decided: deleting
+them is irreversible and the profile may hold logins you still need. Removing packages
+does not remove them.
+
 ## Giving the agent a programmatic browser
 
 VNC is for you. An agent should use CDP or a scraping API, on loopback, on the same
